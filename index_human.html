@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+  <title>PyAgent Inspector</title>
+  <details>
+    <summary>Agent perspective</summary>
+    <gi-tcg-standalone-chessboard id="agentChessboard">
+    </gi-tcg-standalone-chessboard>
+  </details>
+  <div id="humanPlayerChessboard"></div>
+  <details>
+    <summary>Detail Log</summary>
+    <gi-tcg-detail-log-viewer id="detailLogViewer"> </gi-tcg-detail-log-viewer>
+  </details>
+  <script type="module">
+    import { Game } from "https://esm.sh/@gi-tcg/core@0.15.3";
+    import getData from "https://esm.sh/@gi-tcg/data@0.15.3";
+    import {
+      RpcRequest,
+      Notification,
+      RpcResponse,
+    } from "https://esm.sh/@gi-tcg/typings@0.15.3";
+    import { createPlayer } from "https://esm.sh/@gi-tcg/webui@0.15.3";
+    import {
+      entities,
+      characters,
+      actionCards,
+    } from "https://esm.sh/@gi-tcg/static-data@0.15.3";
+
+    const names = [...entities, ...characters, ...actionCards].reduce(
+      (acc, entity) => {
+        acc[entity.id] = entity.name;
+        return acc;
+      },
+      {},
+    );
+
+    // 星柚
+    // AZFy20EQAUHC9UUQFVFB94QQCWJhBo8RClJxB5gRFGICCTEUDLLxi8AZDaJRDMYRDcEB
+    const deck0 = {
+      characters: [1107, 1507, 1204],
+      cards: [
+        215071, 215071, 311206, 311303, 311406, 312004, 312004, 312018, 312018,
+        321013, 321013, 322004, 322004, 322008, 330001, 332004, 332004, 332005,
+        332006, 332006, 332021, 332021, 332022, 332022, 332024, 332025, 332032,
+        332032, 333003, 333004,
+      ],
+    };
+    const deck1 = {
+      characters: [1107, 1507, 1204],
+      cards: [
+        215071, 215071, 311206, 311303, 311406, 312004, 312004, 312018, 312018,
+        321013, 321013, 322004, 322004, 322008, 330001, 332004, 332004, 332005,
+        332006, 332006, 332021, 332021, 332022, 332022, 332024, 332025, 332032,
+        332032, 333003, 333004,
+      ],
+    };
+    const decks = [deck0, deck1];
+
+    const state = Game.createInitialState({
+      data: getData(),
+      decks,
+    });
+    const game = new Game(state);
+
+    // Setup detail log viewer
+    const detailLogViewer = document.querySelector("#detailLogViewer");
+    detailLogViewer.names = (id) => names[id];
+    game.onPause = async () => {
+      detailLogViewer.logs = [...game.detailLog];
+    }
+
+    // Agent: query server for action
+    const agentChessboard = document.querySelector("#agentChessboard");
+    agentChessboard.assetAltText = (id) => names[id];
+    const io0 = {
+      notify: (msg) => {
+        fetch(`/notify`, {
+          method: "POST",
+          body: Notification.encode(msg).finish(),
+        });
+        agentChessboard.state = msg.state;
+        agentChessboard.mutations = msg.mutation;
+      },
+      rpc: async (data) => {
+        const response = await fetch(`/rpc`, {
+          method: "POST",
+          body: RpcRequest.encode(data).finish(),
+        }).then((res) => res.arrayBuffer());
+        return RpcResponse.decode(new Uint8Array(response));
+      },
+    };
+
+    // Human: use webpage chessboard
+    const io1 = createPlayer(
+      document.querySelector("#humanPlayerChessboard"),
+      1,
+      {
+        assetAltText: (id) => names[id],
+        onGiveUp: () => game.giveUp(1),
+      },
+    );
+
+    game.players[0].io = io0;
+    game.players[1].io = io1;
+
+    game.start();
+  </script>
+</html>
