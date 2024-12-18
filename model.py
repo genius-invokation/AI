@@ -20,26 +20,21 @@ from torch.utils.data import Dataset, DataLoader, IterableDataset
 
 model_name = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, padding_side='left')
-# tokenizer.pad_token_id = tokenizer.eos_token_id
-# Check if pad_token is already set
-# if tokenizer.pad_token is None:
-    # Add a new pad token
-    # tokenizer.add_special_tokens({'pad_token': '<PAD>'})
-    # print("Added pad_token:", tokenizer.pad_token)
-# else:
-    # print("Existing pad_token:", tokenizer.pad_token)
+# TODO this is a super ugly way to do this, but it works. Need to solve already borrowed problem of tokenizer.
+def get_new_tokenizer_instance():
+    return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, padding_side='left')
 
 class StreamingDataset(IterableDataset):
     def __init__(self, get_data):
         self.get_data = get_data
         self.want_to_stop = False
+        self.tokenizer = get_new_tokenizer_instance()
     def process_func(self, example):
         # text = tokenizer.apply_chat_template(
             # example[0], tokenize=False, add_generation_prompt=True
         # )
         text = example[0]
-        input_ids = tokenizer(text)["input_ids"] # first try no padding
+        input_ids = self.tokenizer(text)["input_ids"] # first try no padding
         labels = torch.tensor(example[1], dtype=torch.bfloat16) 
         return {"input_ids": input_ids, "labels": labels}
 
@@ -51,6 +46,7 @@ class StreamingDataset(IterableDataset):
 # dataset = StreamingDataset(get_batch)
 
 def prepare_model(run_mode):
+    tokenizer = get_new_tokenizer_instance()
     if run_mode == "train_loss_head":
         model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1,device_map="auto", torch_dtype=torch.bfloat16)
         model.config.pad_token_id = tokenizer.pad_token_id
@@ -102,6 +98,10 @@ default_model = prepare_model("generate")
 def get_lm_response(prompt):
 
     model = default_model
+
+    if not hasattr(get_lm_response, "tokenizer"):
+        get_lm_response.tokenizer = get_new_tokenizer_instance()
+    tokenizer = get_lm_response.tokenizer
     # messages = [
     #     {"role": "system", "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."},
     #     {"role": "user", "content": prompt}
@@ -138,7 +138,7 @@ def reason(prompts, model):
     """
     # Static tokenizer initialization (singleton pattern)
     if not hasattr(reason, "tokenizer"):
-        reason.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, padding_side='left')
+        reason.tokenizer = get_new_tokenizer_instance()
     tokenizer = reason.tokenizer
     device = model.module.device if hasattr(model, "module") else model.device
     # Tokenize the input prompts and move to the model's device
@@ -159,6 +159,9 @@ def reason(prompts, model):
 
 
 def train(train_dataset, run_mode, model=None):
+    if not hasattr(train, "tokenizer"):
+        train.tokenizer = get_new_tokenizer_instance()
+    tokenizer = train.tokenizer
     if model is None:
         model = prepare_model(run_mode)
     if run_mode == "train_loss_head":

@@ -491,7 +491,7 @@ class HeuristicPlayer(Player):
                     remaining_count -= 1
             
             # Then use character element dice
-            character_dice = [d for d in current_dice if d in character_elements]
+            character_dice = [d for d in character_elements for _ in range(current_dice.count(d))]
             for dice in character_dice:
                 if remaining_count > 0:
                     used_dice.append(dice)

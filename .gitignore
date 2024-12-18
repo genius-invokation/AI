@@ -6,3 +6,4 @@ output/
 playwright/
 save_model/
 wandb/
+__pycache__
