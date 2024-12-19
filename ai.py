@@ -802,10 +802,11 @@ class LMTrainer:
         self.data_queue = queue.Queue(maxsize=self.max_size) # This queue will be fetched by the player class and put into the data
 
         # Start the consumer thread
-        self.run_mode = ["train_loss_head", "train_rl"][0]
+        self.run_mode = ["train_loss_head", "train_rl"][1]
         self.consumer_thread = threading.Thread(target=self.train_model)
         self.model = prepare_model(self.run_mode)
         self.stream_dataset = None
+        self.train = True
 
     def start(self):
         self.consumer_thread.start()
@@ -823,6 +824,9 @@ class LMTrainer:
         return self.stream_dataset.want_to_stop
 
     def consume_data(self):
+        while not self.train:
+            print("Not training, waiting for training...")
+            time.sleep(10)
         while self.data_queue.empty():
             print(f"No enough data to consume, waiting for more data...")
             time.sleep(10)
@@ -850,9 +854,12 @@ class LMPlayer(LanguageBasedPlayer):
         # it is called after a data is produced. The producing process use a model to produce the data.
         # put data into the queue. If the queue is full, wait until the queue is not full
         s, a, r = data
+        if self.player_id == 0:
+            r = 1 - r
+        # 暂时没考虑平局
         while self.data_queue.full():
             print("Queue is full, waiting to produce data...")
-            time.sleep(0.02)
+            time.sleep(2)
         # Put data into the queue
         self.data_queue.put((self.build_sa_prompt(s,a), r))
 
@@ -868,7 +875,7 @@ class LMPlayer(LanguageBasedPlayer):
             # random choose an action
             chosen_index = random.randint(0, len(json_actions) - 1)
         else:
-            max_q, max_q_action = -100, None
+            max_q = -100
             if self.run_mode == "train_loss_head":
                 q_list = self.q_from_casual_lm(state, json_actions)
                 for action, q in zip(json_actions, q_list):

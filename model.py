@@ -12,13 +12,17 @@ from transformers import (
     AutoTokenizer,
     DataCollatorWithPadding
 )
-from torch.nn import DataParallel
+from accelerate import Accelerator
+from transformers import BitsAndBytesConfig
+from peft import prepare_model_for_kbit_training
+# from torch.nn import DataParallel
 import wandb
+from log import logger
 wandb.init(project="gitcg", name="debugtryforhead")
 
 from torch.utils.data import Dataset, DataLoader, IterableDataset
 
-model_name = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+model_name = "Qwen/Qwen2.5-Coder-0.5B-Instruct"
 
 # TODO this is a super ugly way to do this, but it works. Need to solve already borrowed problem of tokenizer.
 def get_new_tokenizer_instance():
@@ -35,12 +39,18 @@ class StreamingDataset(IterableDataset):
         # )
         text = example[0]
         input_ids = self.tokenizer(text)["input_ids"] # first try no padding
-        labels = torch.tensor(example[1], dtype=torch.bfloat16) 
+        # log how many tokens are in the input_ids
+        # if self.run_mode == "train_loss_head":
+        if False: # just for rl, and don't know why it may work.
+            labels = torch.tensor(example[1], dtype=torch.bfloat16) 
+        else:
+            labels = torch.tensor(example[1], dtype=torch.float) 
         return {"input_ids": input_ids, "labels": labels}
 
     def __iter__(self):
         while True:
             data = self.get_data()
+            logger.info(f"data: {data[1]}", log_file="data.log")
             yield self.process_func(data)
 
 # dataset = StreamingDataset(get_batch)
@@ -48,7 +58,7 @@ class StreamingDataset(IterableDataset):
 def prepare_model(run_mode):
     tokenizer = get_new_tokenizer_instance()
     if run_mode == "train_loss_head":
-        model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1,device_map="auto", torch_dtype=torch.bfloat16)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1,device_map={'':torch.cuda.current_device()}, torch_dtype=torch.bfloat16)
         model.config.pad_token_id = tokenizer.pad_token_id
         
         for name, param in model.named_parameters():
@@ -60,13 +70,28 @@ def prepare_model(run_mode):
         # print(model.score) is Linear(in_features=896, out_features=1, bias=False)
 
     elif run_mode == "train_rl": 
-        model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=1, torch_dtype=torch.bfloat16)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name, num_labels=1,
+            device_map={'':torch.cuda.current_device()}, 
+            torch_dtype=torch.bfloat16,
+            quantization_config=BitsAndBytesConfig(load_in_8bit=True)
+            # BitsAndBytesConfig(
+            # load_in_4bit = True,
+            # bnb_4bit_compute_dtype = torch.float16,
+            # bnb_4bit_quant_type = "nf4",
+            # bnb_4bit_use_double_quant = True,)
+        )
         """
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16)
         """
-        loaded_state_dict = torch.load('score_layer_weights.pth')
-        model.score.load_state_dict(loaded_state_dict)
+        # todo enable this
+        if model_name == "Qwen/Qwen2.5-Coder-1.5B-Instruct":
+            loaded_state_dict = torch.load('score_layer_weights_1.5B.pth', map_location=model.device)
+            # TODO current problem: regression_values are all <0, abmormal, maybe have something to do with lora and quantization.
+            model.score.load_state_dict(loaded_state_dict)
         model.config.pad_token_id = tokenizer.pad_token_id
+
+        model = prepare_model_for_kbit_training(model)
 
         config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
@@ -80,14 +105,12 @@ def prepare_model(run_mode):
                 "down_proj",
             ],
             inference_mode=False,  # 训练模式
-            r=64,  # Lora 秩
-            lora_alpha=16,  # Lora alaph，具体作用参见 Lora 原理
+            r=8,  # Lora 秩
+            lora_alpha=8,  # Lora alaph，具体作用参见 Lora 原理
             lora_dropout=0.1,  # Dropout 比例
         )
 
         model = get_peft_model(model, config)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = DataParallel(model).to(device)
     elif run_mode == "generate":
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16)
         model.config.pad_token_id = tokenizer.pad_token_id
@@ -126,6 +149,7 @@ def get_lm_response(prompt):
     return response
 
 def reason(prompts, model):
+    # return [0.5] * len(prompts)
     """
     Handles multiple prompts and returns a list of regression values.
 
@@ -142,11 +166,19 @@ def reason(prompts, model):
     tokenizer = reason.tokenizer
     device = model.module.device if hasattr(model, "module") else model.device
     # Tokenize the input prompts and move to the model's device
-    model_inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(device)#(model.device)
 
     model.eval()  # Set model to evaluation mode
     with torch.no_grad():
-        outputs = model(**model_inputs)  # Forward pass
+        try:
+            model_inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
+            outputs = model(**model_inputs)  # Forward pass
+
+        except RuntimeError as e:
+            print(model_inputs['input_ids'].device)
+            print(model.device)
+            print(e)
+            print("BBBBBBBBBBBBBBBBBBBBIIIIIIIIIIIIIIIIIGGGGGG")
+            breakpoint()
 
     # Extract logits (regression outputs)
     logits = outputs.logits  # Shape: [batch_size, 1]
@@ -189,7 +221,7 @@ def train(train_dataset, run_mode, model=None):
     elif run_mode == "train_rl": 
         args = TrainingArguments(
             output_dir=f"./output/{model_name}",
-            per_device_train_batch_size=4,
+            per_device_train_batch_size=1,
             gradient_accumulation_steps=4,
             logging_steps=1,
             save_steps=15,
@@ -229,7 +261,8 @@ def train(train_dataset, run_mode, model=None):
         """
     trainer.train()
     if run_mode == "train_loss_head":
-        torch.save(model.score.state_dict(), 'score_layer_weights.pth')
+        if model_name == "Qwen/Qwen2.5-Coder-1.5B-Instruct":
+            torch.save(model.score.state_dict(), 'score_layer_weights.pth')
     else:
         model.save_pretrained("save_model")
     train_dataset.want_to_stop = True

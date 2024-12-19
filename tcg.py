@@ -50,8 +50,7 @@ DECK0 = Deck(characters=example_deck["characters"], cards=example_deck["cards"])
 DECK1 = Deck(characters=example_deck["characters"], cards=example_deck["cards"])
 
 LMTRAINER = LMTrainer()
-
-def play_game():
+def play_game_heuristic_train():
     game = Game(create_param=CreateParam(deck0=DECK0, deck1=DECK1))
     heuristic_id = 0
     llm_id = 1
@@ -71,13 +70,61 @@ def play_game():
         print("game status:", game.status())
         print("error message:", game.error())
         return -1
+def play_game_eval():
+    LMTRAINER.train = False
+    game = Game(create_param=CreateParam(deck0=DECK0, deck1=DECK1))
+    heuristic_id = 0
+    llm_id = 1
+    game.set_player(heuristic_id, HeuristicPlayer(heuristic_id))
+    game.set_player(llm_id, LMPlayer(llm_id, LMTRAINER))
+
+    game.start()
+    while game.is_running():
+        game.step()
+
+    if game.status() == GameStatus.FINISHED:
+        print("game over")
+        print("winner is player", game.winner(), "LLMPlayer" if game.winner() == llm_id else "HeuristicPlayer" if game.winner() == heuristic_id else "draw")
+        LMTRAINER.train = True
+        return game.winner()
+    else:
+        print("game aborted")
+        print("game status:", game.status())
+        print("error message:", game.error())
+        LMTRAINER.train = True
+        return -1
+def play_game():
+    game = Game(create_param=CreateParam(deck0=DECK0, deck1=DECK1))
+    heuristic_id = 0
+    llm_id = 1
+    # game.set_player(heuristic_id, HeuristicPlayer(heuristic_id))
+    game.set_player(heuristic_id, LMPlayer(heuristic_id, LMTRAINER))
+    game.set_player(llm_id, LMPlayer(llm_id, LMTRAINER))
+
+    game.start()
+    while game.is_running():
+        game.step()
+
+    if game.status() == GameStatus.FINISHED:
+        print("game over")
+        print("LLMPlayer winner is player", game.winner())
+        return game.winner()
+    else:
+        print("game aborted")
+        print("game status:", game.status())
+        print("error message:", game.error())
+        return -1
 
 if __name__ == "__main__":
     play_result = []
+    eval_result = []
     LMTRAINER.start()
-    for _ in range(20):
-        play_result.append(play_game())
-        if LMTRAINER.want_to_stop():
-            break
+    for k in range(5):
+        for _ in range(5):
+            if LMTRAINER.want_to_stop():
+                break
+            play_result.append(play_game())
+        eval_result.append(play_game_eval())
     LMTRAINER.stop()
     print(play_result)
+    print(eval_result)
